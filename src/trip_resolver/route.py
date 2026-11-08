@@ -6,10 +6,14 @@ import statistics
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
+from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 from .exif import PhotoMeta
 from .geo import haversine_m, interpolate
+
+if TYPE_CHECKING:
+    from .geocode import Place
 
 # Źródła czasu, od najbardziej wiarygodnego
 TIME_EXIF_OFFSET = "exif+offset"  # DateTimeOriginal + OffsetTimeOriginal
@@ -70,6 +74,11 @@ class Visit:
     lat: float
     lon: float
     photos: list[ResolvedPhoto]
+    place: "Place | None" = None  # nazwa z OpenStreetMap (opcjonalnie)
+
+    @property
+    def name(self) -> str | None:
+        return self.place.name if self.place else None
 
     @property
     def arrival(self) -> ResolvedPhoto:

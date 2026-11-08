@@ -1,4 +1,8 @@
-"""Wiersz poleceń: trip-resolver ZDJĘCIA... -o WYNIKI/"""
+"""Wiersz poleceń.
+
+  trip-resolver ZDJĘCIA... -o WYNIKI/     odtworzenie trasy z plików/katalogów
+  trip-resolver serve                     strona do wgrywania zdjęć przeciąganiem
+"""
 
 from __future__ import annotations
 
@@ -6,12 +10,12 @@ import argparse
 import re
 import sys
 from datetime import timedelta
-from pathlib import Path
 
 from . import __version__
-from .exif import scan_paths
-from .export import _fmt_dist, _fmt_dur, write_csv, write_geojson, write_html
-from .route import Settings, resolve_trip
+from .export import _fmt_dist, _fmt_dur
+from .geocode import DEFAULT_URL, Geocoder
+from .pipeline import NoPhotosError, run
+from .route import Settings
 
 _SHIFT_RE = re.compile(r"^(?P<cam>.+)=(?P<sign>[+-])(?P<h>\d{1,2}):(?P<m>\d{2})(?::(?P<s>\d{2}))?$")
 
@@ -28,10 +32,16 @@ def _minutes(v: str) -> timedelta:
     return timedelta(minutes=float(v))
 
 
+def _add_geocode_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--geocoder-url", default=DEFAULT_URL, help="adres usługi Nominatim (domyślnie publiczny OSM)")
+    p.add_argument("--geocode-cache", help="plik cache nazw miejsc (domyślnie ~/.cache/trip-resolver/places.json)")
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="trip-resolver",
-        description="Odtwarza przebytą trasę (chronologicznie) z metadanych zdjęć: CSV, GeoJSON i mapa HTML.",
+        description="Odtwarza przebytą trasę (chronologicznie) z metadanych zdjęć: CSV, GeoJSON i mapa HTML. "
+                    "Strona do wgrywania zdjęć przeciąganiem: trip-resolver serve",
     )
     p.add_argument("paths", nargs="+", help="pliki zdjęć lub katalogi (przeszukiwane rekurencyjnie)")
     p.add_argument("-o", "--out", default="trip-out", help="katalog wyników (domyślnie: trip-out)")
@@ -45,12 +55,32 @@ def build_parser() -> argparse.ArgumentParser:
                    help="maks. przerwa w obrębie jednego miejsca, w minutach (domyślnie 180)")
     p.add_argument("--interp-gap", type=_minutes, default=timedelta(hours=2), metavar="MIN",
                    help="maks. przerwa między zdjęciami z GPS, przy której szacujemy pozycję (domyślnie 120)")
+    p.add_argument("--no-geocode", action="store_true", help="bez pobierania nazw miejsc z OpenStreetMap")
+    p.add_argument("--lang", default="pl", help="język nazw miejsc (domyślnie pl)")
+    _add_geocode_args(p)
     p.add_argument("--no-thumbnails", action="store_true", help="bez miniatur w raporcie HTML")
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return p
 
 
+def build_serve_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="trip-resolver serve",
+                                description="Lokalna strona do wgrywania zdjęć przeciąganiem.")
+    p.add_argument("--port", type=int, default=8765, help="port (domyślnie 8765)")
+    p.add_argument("--no-browser", action="store_true", help="nie otwieraj przeglądarki")
+    _add_geocode_args(p)
+    return p
+
+
 def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] == "serve":
+        from .server import serve
+
+        a = build_serve_parser().parse_args(argv[1:])
+        return serve(a.port, open_browser=not a.no_browser, geocoder_url=a.geocoder_url,
+                     cache_path=a.geocode_cache)
+
     args = build_parser().parse_args(argv)
     if args.tz:
         try:
@@ -64,29 +94,26 @@ def main(argv: list[str] | None = None) -> int:
         tz=args.tz, camera_shift=dict(args.shift), stop_radius_m=args.stop_radius,
         stop_max_gap=args.stop_gap, max_interp_gap=args.interp_gap,
     )
-    print("Skanuję zdjęcia...", file=sys.stderr)
-    photos = scan_paths(args.paths)
-    if not photos:
-        print("Nie znaleziono zdjęć.", file=sys.stderr)
+    geocoder = None if args.no_geocode else Geocoder(url=args.geocoder_url, lang=args.lang,
+                                                      cache_path=args.geocode_cache)
+    try:
+        trip = run(args.paths, args.out, settings, title=args.title, thumbnails=not args.no_thumbnails,
+                   geocoder=geocoder, log=lambda s: print(s, file=sys.stderr))
+    except NoPhotosError as e:
+        print(e, file=sys.stderr)
         return 1
-    trip = resolve_trip(photos, settings)
 
-    out = Path(args.out)
-    out.mkdir(parents=True, exist_ok=True)
-    write_csv(trip, out / "timeline.csv")
-    write_geojson(trip, out / "route.geojson")
-    write_html(trip, out / "trip.html", title=args.title, thumbnails=not args.no_thumbnails)
-
-    print(f"\nZdjęć: {len(photos)}, na osi czasu: {len(trip.photos)}, miejsc: {len(trip.visits)}, "
+    print(f"\nNa osi czasu: {len(trip.photos)} zdjęć, miejsc: {len(trip.visits)}, "
           f"dni: {len(trip.days)}, dystans: {_fmt_dist(trip.distance_m)}")
     for day in trip.days:
         print(f"\n{day.date}  ({len(day.photos)} zdj., {_fmt_dist(day.distance_m)})")
         for v in day.visits:
             a, d = v.arrival.local_time, v.departure.local_time
             span = a.strftime("%H:%M") + (f"–{d.strftime('%H:%M')}" if d != a else "")
-            print(f"  {v.index + 1:>3}. {span:<11} {v.lat:.5f}, {v.lon:.5f}  "
-                  f"{len(v.photos)} zdj., {_fmt_dur(v.duration)}")
+            where = v.place.label if v.place else f"{v.lat:.5f}, {v.lon:.5f}"
+            print(f"  {v.index + 1:>3}. {span:<11} {where}  ({len(v.photos)} zdj., {_fmt_dur(v.duration)})")
     for w in trip.warnings:
         print(f"\nUwaga: {w}", file=sys.stderr)
-    print(f"\nWyniki: {out / 'trip.html'}, {out / 'timeline.csv'}, {out / 'route.geojson'}")
+    out = args.out.rstrip("/")
+    print(f"\nWyniki: {out}/trip.html, {out}/timeline.csv, {out}/route.geojson")
     return 0

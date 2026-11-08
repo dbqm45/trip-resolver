@@ -10,7 +10,7 @@ def test_end_to_end(tmp_path, photo_factory):
     photo_factory("in/1.jpg", taken=datetime(2024, 5, 1, 10, 0), offset="+02:00", lat=45.4340, lon=12.3380)
     photo_factory("in/2.jpg", taken=datetime(2024, 5, 1, 11, 0), offset="+02:00")  # bez GPS
     out = tmp_path / "out"
-    assert main([str(tmp_path / "in"), "-o", str(out), "--title", "Wenecja <test>"]) == 0
+    assert main([str(tmp_path / "in"), "-o", str(out), "--title", "Wenecja <test>", "--no-geocode"]) == 0
 
     rows = list(csv.DictReader(open(out / "timeline.csv", encoding="utf-8")))
     assert [r["file"].rsplit("/", 1)[1] for r in rows] == ["1.jpg", "2.jpg", "3.jpg"]

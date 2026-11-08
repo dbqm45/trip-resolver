@@ -1,9 +1,9 @@
 # trip-resolver
 
 Odtwarza **faktycznie przebytą trasę, chronologicznie**, na podstawie metadanych (EXIF) zdjęć z wyjazdu.
-Wskazujesz katalog ze zdjęciami, dostajesz mapę z trasą dzień po dniu, listę odwiedzonych miejsc
-(z godzinami i czasem pobytu), odcinki między nimi (dystans, czas, prawdopodobny środek transportu)
-oraz pliki CSV i GeoJSON.
+Wskazujesz katalog ze zdjęciami (albo przeciągasz je na stronę), dostajesz mapę z trasą dzień po dniu,
+listę odwiedzonych miejsc z nazwami (np. „Ponte di Rialto”), godzinami i czasem pobytu, odcinki między nimi
+(dystans, czas, prawdopodobny środek transportu) oraz pliki CSV i GeoJSON.
 
 ## Instalacja
 
@@ -13,6 +13,19 @@ pip install -e ".[heic]"    # dodatkowo zdjęcia HEIC z iPhone'a
 ```
 
 ## Użycie
+
+### Przeciąganie zdjęć w przeglądarce
+
+```bash
+trip-resolver serve
+```
+
+Otwiera się strona `http://localhost:8765`, na którą przeciągasz zdjęcia lub całe foldery (albo wybierasz je
+przyciskiem). Po kliknięciu „Odtwórz trasę” raport pokazuje się na tej samej stronie, z linkami do CSV i GeoJSON.
+Serwer działa tylko lokalnie (127.0.0.1), zdjęcia trafiają do katalogu tymczasowego usuwanego po zatrzymaniu (Ctrl+C).
+Opcje: `--port`, `--no-browser`.
+
+### Z wiersza poleceń
 
 ```bash
 trip-resolver ~/Zdjecia/Wenecja-2024 -o wyniki --title "Wenecja 2024"
@@ -37,6 +50,9 @@ Raport HTML jest jednym plikiem (miniatury są osadzone). Mapa potrzebuje intern
 | `--stop-radius 150` | zdjęcia bliżej niż tyle metrów należą do jednego miejsca |
 | `--stop-gap 180` | ... o ile przerwa między nimi nie przekracza tylu minut |
 | `--interp-gap 120` | maks. przerwa (min) między zdjęciami z GPS, przy której szacujemy pozycję zdjęć bez GPS |
+| `--no-geocode` | bez nazw miejsc (nic nie jest wysyłane do sieci) |
+| `--lang en` | język nazw miejsc (domyślnie `pl`) |
+| `--geocoder-url URL` | własna instancja Nominatim zamiast publicznej |
 | `--no-thumbnails` | raport bez miniatur (mniejszy plik) |
 
 Można też uruchomić bez instalacji: `PYTHONPATH=src python3 -m trip_resolver ZDJĘCIA -o wyniki`.
@@ -56,7 +72,11 @@ Można też uruchomić bez instalacji: `PYTHONPATH=src python3 -m trip_resolver 
 6. **Miejsca i odcinki**: kolejne zdjęcia blisko siebie tworzą jedno miejsce (z czasem przyjścia i wyjścia).
    Powrót w to samo miejsce później to osobna wizyta, bo liczy się kolejność. Między miejscami liczony jest
    dystans, czas i prędkość, a z niej środek transportu (pieszo / rower, łódź / samochód, pociąg / samolot).
-7. **Podział na dni** według lokalnej daty zdjęcia.
+7. **Nazwy miejsc**: dla każdego miejsca (nie każdego zdjęcia) jedno zapytanie do Nominatim / OpenStreetMap.
+   Wysyłane są tylko współrzędne, maks. 1 zapytanie na sekundę, wyniki zapamiętywane w
+   `~/.cache/trip-resolver/places.json`, więc ponowne uruchomienie nie pyta drugi raz. Bez internetu trasa
+   powstaje normalnie, tylko bez nazw.
+8. **Podział na dni** według lokalnej daty zdjęcia.
 
 Dystans to suma odcinków w linii prostej między kolejnymi punktami, więc jest dolnym oszacowaniem rzeczywistej drogi.
 

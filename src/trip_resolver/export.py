@@ -37,7 +37,7 @@ def _iso_local(p) -> str:
 
 CSV_COLUMNS = [
     "order", "file", "local_time", "utc_time", "utc_offset", "time_source",
-    "lat", "lon", "position_source", "gps_rejected", "altitude", "visit", "day", "camera",
+    "lat", "lon", "position_source", "gps_rejected", "altitude", "visit", "place", "day", "camera",
 ]
 
 
@@ -54,6 +54,8 @@ def write_csv(trip: Trip, path: str | os.PathLike) -> None:
                 p.position_source or "", "1" if p.gps_rejected else "",
                 "" if p.meta.altitude is None else f"{p.meta.altitude:.1f}",
                 "" if p.visit_index is None else p.visit_index + 1,
+                "" if p.visit_index is None or not trip.visits[p.visit_index].place
+                else trip.visits[p.visit_index].place.label,
                 p.local_date.isoformat(), p.meta.camera,
             ])
 
@@ -83,7 +85,10 @@ def to_geojson(trip: Trip) -> dict:
         features.append({
             "type": "Feature",
             "geometry": {"type": "Point", "coordinates": [v.lon, v.lat]},
-            "properties": {"kind": "visit", "index": v.index + 1, "arrival": _iso_local(v.arrival),
+            "properties": {"kind": "visit", "index": v.index + 1,
+                           "name": v.place.name if v.place else None,
+                           "detail": v.place.detail if v.place else None,
+                           "arrival": _iso_local(v.arrival),
                            "departure": _iso_local(v.departure), "photos": len(v.photos)},
         })
     for i, p in enumerate(trip.photos, 1):
@@ -130,6 +135,7 @@ def report_data(trip: Trip, thumbnails: bool = True, thumb_size: int = 160) -> d
         })
     visits = [{
         "index": v.index, "lat": v.lat, "lon": v.lon,
+        "name": v.place.name if v.place else None, "detail": v.place.detail if v.place else "",
         "arrival": v.arrival.local_time.strftime("%H:%M"), "departure": v.departure.local_time.strftime("%H:%M"),
         "date": v.arrival.local_date.isoformat(), "duration": _fmt_dur(v.duration),
         "photos": [photo_ids[id(p)] for p in v.photos],
@@ -201,8 +207,10 @@ h1{font-size:18px;margin:0 0 4px}
 .visit:hover,.visit.on{border-color:var(--accent)}
 .visit .hd{display:flex;gap:8px;align-items:baseline}
 .num{font-weight:700;min-width:22px}
-.visit .t{font-variant-numeric:tabular-nums}
-.visit .d{color:var(--muted);font-size:12px;margin-left:auto}
+.visit .nm{font-weight:600}
+.visit .meta{display:flex;gap:4px;color:var(--muted);font-size:12px;margin-top:2px;padding-left:30px}
+.visit .t{font-variant-numeric:tabular-nums;color:var(--ink)}
+.visit .d{margin-left:auto;white-space:nowrap}
 .thumbs{display:flex;gap:4px;flex-wrap:wrap;margin-top:6px}
 .thumbs img{width:56px;height:56px;object-fit:cover;border-radius:4px}
 .leg{color:var(--muted);font-size:12px;padding:4px 0 4px 30px;border-left:2px dotted var(--line);margin-left:16px}
@@ -244,7 +252,10 @@ D.days.forEach(day => {
   day.visits.forEach(vi => {
     const v = D.visits[vi];
     const th = v.photos.slice(0, 8).map(i => D.photos[i]).filter(p => p.thumb).map(p => `<img src="${p.thumb}" alt="${esc(p.file)}" title="${esc(p.file)} ${esc(p.time)}">`).join("");
-    h += `<div class="visit" data-v="${vi}"><div class="hd"><span class="num">${vi + 1}.</span><span class="t">${esc(v.arrival)}${v.arrival !== v.departure ? "–" + esc(v.departure) : ""}</span><span class="d">${v.photos.length} zdj. · ${esc(v.duration)}</span></div>${th ? `<div class="thumbs">${th}</div>` : ""}</div>`;
+    const coords = `${v.lat.toFixed(5)}, ${v.lon.toFixed(5)}`;
+    h += `<div class="visit" data-v="${vi}"><div class="hd"><span class="num">${vi + 1}.</span><span class="nm">${esc(v.name || coords)}</span></div>`
+      + `<div class="meta"><span class="t">${esc(v.arrival)}${v.arrival !== v.departure ? "–" + esc(v.departure) : ""}</span>${v.detail ? " · " + esc(v.detail) : ""}<span class="d">${v.photos.length} zdj. · ${esc(v.duration)}</span></div>`
+      + `${th ? `<div class="thumbs">${th}</div>` : ""}</div>`;
     const l = legFrom[vi];
     if (l && D.visits[l.to].date === day.date) h += `<div class="leg">↓ ${esc(l.distance)} · ${esc(l.duration)} · ${esc(l.mode)}</div>`;
   });
@@ -283,7 +294,7 @@ if (window.L) {
     const color = dayColor[v.date];
     const icon = L.divIcon({className: "", html: `<div class="marker" style="border-color:${color}">${v.index + 1}</div>`, iconSize: [26, 26], iconAnchor: [13, 13]});
     visitMarkers[v.index] = L.marker([v.lat, v.lon], {icon, zIndexOffset: 1000})
-      .bindPopup(`<b>${v.index + 1}. ${esc(v.date)} ${esc(v.arrival)}–${esc(v.departure)}</b><br>${v.photos.length} zdj. · ${esc(v.duration)}`
+      .bindPopup(`<b>${v.index + 1}. ${esc(v.name || "Miejsce " + (v.index + 1))}</b>${v.detail ? "<br>" + esc(v.detail) : ""}<br>${esc(v.date)} ${esc(v.arrival)}–${esc(v.departure)} · ${v.photos.length} zdj. · ${esc(v.duration)}`
         + (D.photos[v.photos[0]].thumb ? `<br><img src="${D.photos[v.photos[0]].thumb}">` : ""))
       .addTo(map);
   });
