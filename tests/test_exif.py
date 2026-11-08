@@ -46,3 +46,8 @@ def test_scan_is_recursive_and_skips_other_files(tmp_path, photo_factory):
 ])
 def test_parse_offset(raw, expected):
     assert parse_offset(raw) == expected
+
+
+def test_reads_gps_accuracy(photo_factory):
+    m = read_photo(photo_factory("acc.jpg", taken=datetime(2024, 1, 1, 12), lat=45.0, lon=12.0, gps_error=35.5))
+    assert m.gps_error_m == pytest.approx(35.5)

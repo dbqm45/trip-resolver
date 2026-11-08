@@ -70,6 +70,9 @@ Można też uruchomić bez instalacji: `PYTHONPATH=src python3 -m trip_resolver 
 5. **Uzupełnianie pozycji**: zdjęcia bez GPS dostają pozycję interpolowaną w czasie między sąsiednimi
    zdjęciami z GPS (lub pozycję najbliższego zdjęcia, gdy jest w ciągu 15 min). Na mapie i w CSV są oznaczone jako oszacowane.
 6. **Miejsca i odcinki**: kolejne zdjęcia blisko siebie tworzą jedno miejsce (z czasem przyjścia i wyjścia).
+   Środek miejsca to mediana pozycji, a typowy szum GPS (1–2 zdjęcia, które „wyskoczyły” na chwilę obok,
+   punkty z deklarowanym błędem > 100 m) nie tworzy osobnych miejsc. Linia trasy na mapie łączy miejsca,
+   nie pojedyncze zdjęcia; punkty zdjęć można włączyć w raporcie.
    Powrót w to samo miejsce później to osobna wizyta, bo liczy się kolejność. Między miejscami liczony jest
    dystans, czas i prędkość, a z niej środek transportu (pieszo / rower, łódź / samochód, pociąg / samolot).
 7. **Nazwy miejsc**: dla każdego miejsca (nie każdego zdjęcia) jedno zapytanie do Nominatim / OpenStreetMap.

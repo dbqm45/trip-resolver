@@ -25,6 +25,7 @@ def make_photo(
     lat: float | None = None,
     lon: float | None = None,
     gps_utc: datetime | None = None,
+    gps_error: float | None = None,
     make: str = "TestCam",
     model: str = "TC-1",
     color=(120, 160, 200),
@@ -44,6 +45,8 @@ def make_photo(
         gps[2] = _dms(lat)
         gps[3] = "E" if lon >= 0 else "W"
         gps[4] = _dms(lon)
+        if gps_error is not None:
+            gps[31] = IFDRational(int(gps_error * 10), 10)
         if gps_utc:
             gps[7] = (IFDRational(gps_utc.hour, 1), IFDRational(gps_utc.minute, 1), IFDRational(gps_utc.second, 1))
             gps[29] = gps_utc.strftime("%Y:%m:%d")

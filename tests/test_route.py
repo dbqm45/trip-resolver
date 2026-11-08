@@ -124,3 +124,53 @@ def test_gps_only_time():
     m = PhotoMeta(path="g", lat=45.0, lon=12.0, gps_time=datetime(2024, 5, 1, 7, 0, tzinfo=timezone.utc))
     trip = resolve_trip([m])
     assert trip.photos[0].time_utc.hour == 7 and trip.photos[0].position_source == POS_EXIF
+
+
+def _jitter_day(n=120, seed=3, spike_every=15):
+    """Długi pobyt na placu: GPS skacze ±60 m, co jakiś czas pojedynczy skok ~250 m."""
+    import random
+
+    rnd = random.Random(seed)
+    out = []
+    for i in range(n):
+        d = 0.0025 if i % spike_every == 7 else 0.0006
+        out.append(pm(f"j{i:03d}", i, 45.4341 + rnd.uniform(-d, d), 12.3388 + rnd.uniform(-d, d)))
+    return out
+
+
+def test_gps_jitter_gives_one_place_and_small_distance():
+    trip = resolve_trip(_jitter_day())
+    assert len(trip.visits) == 1
+    v = trip.visits[0]
+    assert abs(v.lat - 45.4341) < 0.0003 and abs(v.lon - 12.3388) < 0.0003  # mediana, nie średnia
+    assert trip.distance_m == 0
+
+
+def test_excursion_is_merged_but_real_detour_is_not():
+    base = [pm("a1", 0, 45.4341, 12.3388), pm("a2", 2, 45.4342, 12.3389)]
+    spike = [pm("x", 3, 45.4365, 12.3388)]  # ~270 m obok, minutę później z powrotem
+    back = [pm("a3", 4, 45.4341, 12.3387)]
+    assert len(resolve_trip(base + spike + back).visits) == 1
+    # prawdziwe wyjście: 40 minut w innym miejscu
+    detour = [pm(f"y{i}", 10 + i * 10, 45.4365, 12.3388) for i in range(3)]
+    later = [pm("a4", 60, 45.4341, 12.3387)]
+    assert len(resolve_trip(base + detour + later).visits) == 3
+
+
+def test_inaccurate_gps_is_ignored():
+    good1 = pm("g1", 0, 45.4341, 12.3388)
+    bad = pm("bad", 5, 45.45, 12.36)
+    bad.gps_error_m = 650.0
+    good2 = pm("g2", 10, 45.4342, 12.3389)
+    trip = resolve_trip([good1, bad, good2])
+    b = next(p for p in trip.photos if p.meta.path == "bad")
+    assert b.gps_rejected and b.position_source == POS_INTERPOLATED
+    assert len(trip.visits) == 1
+    assert any("niedokładne" in w for w in trip.warnings)
+
+
+def test_day_distance_follows_places():
+    photos = _jitter_day(40) + [pm(f"r{i}", 100 + i, 45.4380, 12.3358) for i in range(5)]
+    trip = resolve_trip(photos)
+    assert len(trip.visits) == 2
+    assert 400 < trip.days[0].distance_m < 600  # San Marco → Rialto ~500 m, bez sumowania skoków GPS

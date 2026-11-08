@@ -38,6 +38,7 @@ _GPS_LON_REF, _GPS_LON = 3, 4
 _GPS_ALT_REF, _GPS_ALT = 5, 6
 _GPS_TIMESTAMP = 7
 _GPS_DATESTAMP = 29
+_GPS_H_ERROR = 31  # GPSHPositioningError (m) — zapisuje m.in. iPhone
 
 _OFFSET_RE = re.compile(r"^\s*([+-])(\d{2}):?(\d{2})\s*$")
 
@@ -53,6 +54,7 @@ class PhotoMeta:
     lat: float | None = None
     lon: float | None = None
     altitude: float | None = None
+    gps_error_m: float | None = None  # deklarowana dokładność pozycji
     make: str | None = None
     model: str | None = None
     width: int | None = None
@@ -188,6 +190,11 @@ def read_photo(path: str | os.PathLike) -> PhotoMeta:
             gps = exif.get_ifd(_IFD_GPS)
             if gps:
                 meta.lat, meta.lon, meta.altitude, meta.gps_time = _parse_gps(gps)
+                if _GPS_H_ERROR in gps:
+                    try:
+                        meta.gps_error_m = _rational(gps[_GPS_H_ERROR])
+                    except (TypeError, ValueError, ZeroDivisionError):
+                        pass
     except Exception as e:  # uszkodzony plik, nieobsługiwany format itp.
         meta.error = f"{type(e).__name__}: {e}"
     return meta

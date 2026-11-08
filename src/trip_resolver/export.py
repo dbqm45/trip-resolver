@@ -73,11 +73,11 @@ def _offset_str(off: timedelta) -> str:
 def to_geojson(trip: Trip) -> dict:
     features = []
     for di, day in enumerate(trip.days):
-        pts = [p for p in day.photos if p.has_position]
+        pts = day.visits
         if len(pts) >= 2:
             features.append({
                 "type": "Feature",
-                "geometry": {"type": "LineString", "coordinates": [[p.lon, p.lat] for p in pts]},
+                "geometry": {"type": "LineString", "coordinates": [[v.lon, v.lat] for v in pts]},
                 "properties": {"kind": "day-route", "date": day.date.isoformat(),
                                "distance_m": round(day.distance_m), "color": DAY_COLORS[di % len(DAY_COLORS)]},
             })
@@ -200,9 +200,19 @@ h1{font-size:18px;margin:0 0 4px}
 .stat span{font-size:11px;color:var(--muted)}
 .warn{background:var(--warn-bg);color:var(--warn);border-radius:8px;padding:8px 10px;font-size:12.5px;margin:6px 0}
 .day{margin-top:18px}
-.day h2{font-size:15px;margin:0 0 8px;display:flex;align-items:center;gap:8px}
-.day h2 i{width:12px;height:12px;border-radius:50%;display:inline-block}
-.day h2 small{color:var(--muted);font-weight:400}
+.day h2{margin:0 0 8px}
+.dayhd{all:unset;box-sizing:border-box;width:100%;cursor:pointer;font-size:15px;font-weight:700;display:flex;align-items:center;gap:8px;padding:6px 8px;margin-left:-8px;border-radius:8px;min-height:44px}
+.dayhd:hover{background:var(--bg)}
+.dayhd:focus-visible{outline:2px solid var(--accent)}
+.dayhd i{width:12px;height:12px;border-radius:50%;display:inline-block;flex:none}
+.dayhd small{color:var(--muted);font-weight:400}
+.dayhd .fx{margin-left:auto;font-size:12px;font-weight:400;color:var(--accent);white-space:nowrap}
+.day.dim{opacity:.45}
+.tools{display:flex;flex-direction:column;gap:4px;margin:10px 0 0;font-size:13px}
+.tools label{display:flex;gap:8px;align-items:center;min-height:32px;cursor:pointer}
+.tools input{width:18px;height:18px}
+.tools .hint{color:var(--muted);font-size:12px}
+.arrow{font-size:13px;line-height:14px;width:14px;height:14px;text-align:center;text-shadow:0 0 2px #fff,0 0 2px #fff}
 .visit{border:1px solid var(--line);border-radius:8px;padding:8px 10px;cursor:pointer}
 .visit:hover,.visit.on{border-color:var(--accent)}
 .visit .hd{display:flex;gap:8px;align-items:baseline}
@@ -239,16 +249,18 @@ let map = null;
 const S = D.summary;
 let h = `<h1>${esc(D.title)}</h1><div class="sum">${S.start ? esc(S.start.replace("T", " ")) + " → " + esc(S.end.replace("T", " ")) : "Brak zdjęć z datą"}</div>
 <div class="stats">
-<div class="stat"><b>${S.distance}</b><span>dystans (w linii prostej między punktami)</span></div>
+<div class="stat"><b>${S.distance}</b><span>dystans (w linii prostej między miejscami)</span></div>
 <div class="stat"><b>${S.visits}</b><span>miejsc w ${S.days} dni</span></div>
 <div class="stat"><b>${S.photos}</b><span>zdjęć · ${S.withGps} z GPS, ${S.estimated} oszac.</span></div>
 </div>`;
 D.warnings.forEach(w => h += `<div class="warn">${esc(w)}</div>`);
 if (S.unplaced.length) h += `<div class="warn">Pominięte: ${S.unplaced.map(esc).join(", ")}</div>`;
+h += `<div class="tools"><label><input type="checkbox" id="showPhotos"> Pokaż punkty wszystkich zdjęć</label>
+<span class="hint">Kliknij datę, aby pokazać na mapie tylko ten dzień.</span></div>`;
 
 const legFrom = {}; D.legs.forEach(l => legFrom[l.from] = l);
 D.days.forEach(day => {
-  h += `<section class="day"><h2><i style="background:${day.color}"></i>${esc(day.date)} <small>${day.photos.length} zdj. · ${esc(day.distance)}</small></h2>`;
+  h += `<section class="day" data-day="${esc(day.date)}"><h2><button class="dayhd" type="button" aria-pressed="false"><i style="background:${day.color}"></i><span style="white-space:nowrap">${esc(day.date)}</span> <small>${day.visits.length} miejsc · ${day.photos.length} zdj. · ${esc(day.distance)}</small><span class="fx"></span></button></h2>`;
   day.visits.forEach(vi => {
     const v = D.visits[vi];
     const th = v.photos.slice(0, 8).map(i => D.photos[i]).filter(p => p.thumb).map(p => `<img src="${p.thumb}" alt="${esc(p.file)}" title="${esc(p.file)} ${esc(p.time)}">`).join("");
@@ -265,29 +277,83 @@ D.days.forEach(day => {
 });
 const side = document.getElementById("side");
 side.innerHTML = h;
+let focused = null;
+const dayLayers = {}, photoLayers = {}, dayBounds = {};
+
+function applyLayers() {
+  if (!map) return;
+  const show = document.getElementById("showPhotos").checked;
+  D.days.forEach(d => {
+    const on = !focused || focused === d.date;
+    if (dayLayers[d.date]) on ? dayLayers[d.date].addTo(map) : dayLayers[d.date].remove();
+    if (photoLayers[d.date]) (on && show) ? photoLayers[d.date].addTo(map) : photoLayers[d.date].remove();
+  });
+}
+
+function focusDay(date) {
+  focused = focused === date ? null : date;
+  side.querySelectorAll(".day").forEach(sec => {
+    const on = sec.dataset.day === focused;
+    sec.classList.toggle("dim", !!focused && !on);
+    const btn = sec.querySelector(".dayhd");
+    btn.setAttribute("aria-pressed", on ? "true" : "false");
+    sec.querySelector(".fx").textContent = on ? "pokaż wszystkie dni" : "";
+  });
+  applyLayers();
+  if (map) {
+    const b = focused ? dayBounds[focused] : allBounds;
+    if (b && b.length) map.fitBounds(b, {padding: [30, 30], maxZoom: 17});
+  }
+}
+
 side.addEventListener("click", e => {
+  const hd = e.target.closest(".dayhd");
+  if (hd) return focusDay(hd.closest(".day").dataset.day);
   const el = e.target.closest(".visit"); if (!el) return;
   side.querySelectorAll(".visit.on").forEach(x => x.classList.remove("on")); el.classList.add("on");
-  const m = visitMarkers[+el.dataset.v];
+  const v = D.visits[+el.dataset.v];
+  if (focused && focused !== v.date) focusDay(v.date);
+  const m = visitMarkers[v.index];
   if (map && m) { map.flyTo(m.getLatLng(), Math.max(map.getZoom(), 16)); m.openPopup(); }
 });
+document.getElementById("showPhotos").addEventListener("change", applyLayers);
 
+function bearing(a, b) {
+  const r = Math.PI / 180, f1 = a[0] * r, f2 = b[0] * r, dl = (b[1] - a[1]) * r;
+  return Math.atan2(Math.sin(dl) * Math.cos(f2), Math.cos(f1) * Math.sin(f2) - Math.sin(f1) * Math.cos(f2) * Math.cos(dl)) / r;
+}
+
+let allBounds = [];
 if (window.L) {
   map = L.map("map");
   L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {maxZoom: 19,
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'}).addTo(map);
 
-  const bounds = [];
-
   D.days.forEach(day => {
-    const pts = day.photos.map(i => D.photos[i]).filter(p => p.lat != null);
-    if (pts.length > 1) L.polyline(pts.map(p => [p.lat, p.lon]), {color: day.color, weight: 4, opacity: .8}).addTo(map);
-    pts.forEach(p => {
-      bounds.push([p.lat, p.lon]);
+    const g = L.layerGroup(), pg = L.layerGroup(), b = [];
+    // trasa dnia: tylko przez miejsca, w kolejności odwiedzin
+    const stops = day.visits.map(i => D.visits[i]).map(v => [v.lat, v.lon]);
+    if (stops.length > 1) {
+      L.polyline(stops, {color: day.color, weight: 4, opacity: .85, lineJoin: "round"}).addTo(g);
+      for (let i = 0; i < stops.length - 1; i++) {  // strzałka kierunku w połowie odcinka
+        const a = stops[i], c = stops[i + 1];
+        if (a[0] === c[0] && a[1] === c[1]) continue;
+        const ang = bearing(a, c) - 90;
+        L.marker([(a[0] + c[0]) / 2, (a[1] + c[1]) / 2], {interactive: false, keyboard: false,
+          icon: L.divIcon({className: "", iconSize: [14, 14], iconAnchor: [7, 7],
+            html: `<div class="arrow" style="color:${day.color};transform:rotate(${ang}deg)">➤</div>`})}).addTo(g);
+      }
+    }
+    stops.forEach(s => b.push(s));
+    // punkty zdjęć — warstwa opcjonalna, bez linii
+    day.photos.map(i => D.photos[i]).filter(p => p.lat != null).forEach(p => {
+      b.push([p.lat, p.lon]);
       L.circleMarker([p.lat, p.lon], {radius: 3, color: day.color, weight: 1,
-        fillOpacity: p.pos === "exif" ? .9 : .2, dashArray: p.pos === "exif" ? null : "2"})
-        .bindPopup(photoPopup(p)).addTo(map);
+        fillOpacity: p.pos === "exif" ? .7 : .15, dashArray: p.pos === "exif" ? null : "2"})
+        .bindPopup(photoPopup(p)).addTo(pg);
     });
+    dayLayers[day.date] = g; photoLayers[day.date] = pg; dayBounds[day.date] = stops.length ? stops : b;
+    allBounds = allBounds.concat(dayBounds[day.date]);
   });
 
   D.visits.forEach(v => {
@@ -296,9 +362,10 @@ if (window.L) {
     visitMarkers[v.index] = L.marker([v.lat, v.lon], {icon, zIndexOffset: 1000})
       .bindPopup(`<b>${v.index + 1}. ${esc(v.name || "Miejsce " + (v.index + 1))}</b>${v.detail ? "<br>" + esc(v.detail) : ""}<br>${esc(v.date)} ${esc(v.arrival)}–${esc(v.departure)} · ${v.photos.length} zdj. · ${esc(v.duration)}`
         + (D.photos[v.photos[0]].thumb ? `<br><img src="${D.photos[v.photos[0]].thumb}">` : ""))
-      .addTo(map);
+      .addTo(dayLayers[v.date]);
   });
-  if (bounds.length) map.fitBounds(bounds, {padding: [30, 30]}); else map.setView([50, 15], 4);
+  applyLayers();
+  if (allBounds.length) map.fitBounds(allBounds, {padding: [30, 30], maxZoom: 17}); else map.setView([50, 15], 4);
 } else {
   document.getElementById("map").innerHTML = '<div class="warn" style="margin:16px">Nie udało się wczytać mapy (brak internetu?). Oś czasu po lewej działa bez niej.</div>';
 }

@@ -37,6 +37,10 @@ class Settings:
     max_interp_gap: timedelta = timedelta(hours=2)  # max przerwa między punktami GPS do interpolacji
     nearest_window: timedelta = timedelta(minutes=15)  # przypięcie do najbliższego punktu GPS
     max_speed_kmh: float = 1000.0  # szybciej = błędny odczyt GPS
+    max_gps_error_m: float | None = 100.0  # punkty z gorszą deklarowaną dokładnością są pomijane
+    excursion_max_photos: int = 2  # tyle zdjęć "obok" miejsca i powrót = szum GPS, nie osobne miejsce
+    excursion_max_time: timedelta = timedelta(minutes=15)
+    excursion_snap: timedelta = timedelta(minutes=3)  # 1–2 zdjęcia tuż obok dużego miejsca → do niego
 
 
 @dataclass
@@ -144,7 +148,7 @@ class Trip:
 
     @property
     def distance_m(self) -> float:
-        return sum(d.distance_m for d in self.days)
+        return sum(l.distance_m for l in self.legs)
 
     @property
     def path(self) -> list[ResolvedPhoto]:
@@ -296,18 +300,16 @@ def fill_positions(photos: list[ResolvedPhoto], settings: Settings) -> int:
 # ─────────────────────────── miejsca, odcinki, dni ───────────────────────────
 
 
+def _median_center(photos: list[ResolvedPhoto]) -> tuple[float, float]:
+    """Środek miejsca odporny na pojedyncze skoki GPS."""
+    return statistics.median(p.lat for p in photos), statistics.median(p.lon for p in photos)
+
+
 def build_visits(photos: list[ResolvedPhoto], settings: Settings) -> list[Visit]:
-    visits: list[Visit] = []
+    # 1) kolejne zdjęcia blisko siebie → jedna grupa
+    groups: list[list[ResolvedPhoto]] = []
     cur: list[ResolvedPhoto] = []
     clat = clon = 0.0
-
-    def close():
-        if cur:
-            v = Visit(len(visits), clat, clon, list(cur))
-            for p in cur:
-                p.visit_index = v.index
-            visits.append(v)
-
     for p in photos:
         if not p.has_position:
             continue
@@ -320,9 +322,71 @@ def build_visits(photos: list[ResolvedPhoto], settings: Settings) -> list[Visit]
             clat += (p.lat - clat) / n
             clon += (p.lon - clon) / n
         else:
-            close()
+            if cur:
+                groups.append(cur)
             cur, clat, clon = [p], p.lat, p.lon
-    close()
+    if cur:
+        groups.append(cur)
+
+    # 2) sprzątanie szumu GPS
+    radius = settings.stop_radius_m
+    centers = [_median_center(g) for g in groups]
+
+    def dist(i, j):
+        return haversine_m(*centers[i], *centers[j])
+
+    changed = True
+    while changed:
+        changed = False
+        # a) sąsiednie grupy w tym samym miejscu (np. po przesunięciu środka) → jedna
+        for i in range(len(groups) - 1):
+            if dist(i, i + 1) <= radius and groups[i + 1][0].time_utc - groups[i][-1].time_utc <= settings.stop_max_gap:
+                groups[i:i + 2] = [groups[i] + groups[i + 1]]
+                centers[i:i + 2] = [_median_center(groups[i])]
+                changed = True
+                break
+        if changed:
+            continue
+        # b) A → krótki "wyskok" X → A: X to szum, całość to jedno miejsce
+        for i in range(1, len(groups) - 1):
+            x = groups[i]
+            if (
+                len(x) <= settings.excursion_max_photos
+                and groups[i + 1][0].time_utc - groups[i - 1][-1].time_utc <= settings.excursion_max_time
+                and dist(i - 1, i + 1) <= radius
+                and dist(i - 1, i) <= 5 * radius
+            ):
+                groups[i - 1:i + 2] = [groups[i - 1] + x + groups[i + 1]]
+                centers[i - 1:i + 2] = [_median_center(groups[i - 1])]
+                changed = True
+                break
+        if changed:
+            continue
+        # c) 1–2 zdjęcia zrobione chwilę przed/po dużym miejscu, niedaleko → skok GPS, dołącz do niego
+        for i, x in enumerate(groups):
+            if len(x) > settings.excursion_max_photos:
+                continue
+            best = None
+            for j in (i - 1, i + 1):
+                if not 0 <= j < len(groups) or len(groups[j]) <= settings.excursion_max_photos:
+                    continue
+                gap = x[0].time_utc - groups[j][-1].time_utc if j < i else groups[j][0].time_utc - x[-1].time_utc
+                if gap <= settings.excursion_snap and dist(i, j) <= 5 * radius and (best is None or gap < best[0]):
+                    best = (gap, j)
+            if best:
+                j = best[1]
+                lo, hi = min(i, j), max(i, j)
+                groups[lo:hi + 1] = [groups[lo] + groups[hi]]
+                centers[lo:hi + 1] = [_median_center(groups[lo])]
+                changed = True
+                break
+
+    visits = []
+    for g, (lat, lon) in zip(groups, centers):
+        v = Visit(len(visits), lat, lon, g)
+        for p in g:
+            p.visit_index = v.index
+        visits.append(v)
     return visits
 
 
@@ -333,20 +397,18 @@ def build_legs(visits: list[Visit]) -> list[Leg]:
     ]
 
 
-def _path_distance(points: list[ResolvedPhoto]) -> float:
-    return sum(haversine_m(a.lat, a.lon, b.lat, b.lon) for a, b in zip(points, points[1:]))
-
-
-def build_days(photos: list[ResolvedPhoto], visits: list[Visit]) -> list[Day]:
+def build_days(photos: list[ResolvedPhoto], visits: list[Visit], legs: list[Leg]) -> list[Day]:
     by_day: dict[date, list[ResolvedPhoto]] = defaultdict(list)
     for p in photos:
         by_day[p.local_date].append(p)
+    dist: dict[date, float] = defaultdict(float)
+    for l in legs:  # odcinek liczony do dnia, w którym dotarto do celu
+        dist[l.end.arrival.local_date] += l.distance_m
     days = []
     for d in sorted(by_day):
         ps = by_day[d]
         idx = sorted({p.visit_index for p in ps if p.visit_index is not None})
-        path = [p for p in ps if p.has_position]
-        days.append(Day(d, [visits[i] for i in idx], ps, _path_distance(path)))
+        days.append(Day(d, [visits[i] for i in idx], ps, dist[d]))
     return days
 
 
@@ -354,9 +416,17 @@ def resolve_trip(photos: list[PhotoMeta], settings: Settings | None = None) -> T
     settings = settings or Settings()
     warnings: list[str] = []
     resolved, unplaced = resolve_times(photos, settings, warnings)
+    inaccurate = 0
     for p in resolved:
         if p.meta.has_gps:
+            err = p.meta.gps_error_m
+            if settings.max_gps_error_m is not None and err is not None and err > settings.max_gps_error_m:
+                p.gps_rejected = True  # zbyt niedokładny — pozycja zostanie oszacowana jak bez GPS
+                inaccurate += 1
+                continue
             p.lat, p.lon, p.position_source = p.meta.lat, p.meta.lon, POS_EXIF
+    if inaccurate:
+        warnings.append(f"Pominięte niedokładne odczyty GPS (błąd > {settings.max_gps_error_m:.0f} m): {inaccurate}.")
     n_out = mark_outliers(resolved, settings)
     if n_out:
         warnings.append(f"Odczyty GPS odrzucone jako błędne (nierealna prędkość): {n_out}.")
@@ -368,5 +438,5 @@ def resolve_trip(photos: list[PhotoMeta], settings: Settings | None = None) -> T
         warnings.append(f"Zdjęcia bez położenia (brak GPS i brak bliskich w czasie zdjęć z GPS): {no_pos}.")
     visits = build_visits(resolved, settings)
     legs = build_legs(visits)
-    days = build_days(resolved, visits)
+    days = build_days(resolved, visits, legs)
     return Trip(resolved, visits, legs, days, unplaced, warnings)
